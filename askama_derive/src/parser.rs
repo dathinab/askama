@@ -1,7 +1,7 @@
 // rustfmt doesn't do a very good job on nom parser invocations.
 #![cfg_attr(rustfmt, rustfmt_skip)]
 
-use nom::{self, IResult};
+use nom;
 use std::str;
 
 #[derive(Debug)]
@@ -97,13 +97,14 @@ fn split_ws_parts(s: &[u8]) -> Node {
               str::from_utf8(res.2).unwrap())
 }
 
+#[derive(Debug)]
 enum ContentState {
     Any,
     Brace(usize),
     End(usize),
 }
 
-fn take_content(i: &[u8]) -> IResult<&[u8], Node> {
+fn take_content(i: &[u8]) -> Result<(&[u8], Node), nom::Err<&[u8]>> {
     use parser::ContentState::*;
     let mut state = Any;
     for (idx, c) in i.iter().enumerate() {
@@ -122,24 +123,24 @@ fn take_content(i: &[u8]) -> IResult<&[u8], Node> {
     }
     match state {
         Any |
-        Brace(_) => IResult::Done(&i[..0], split_ws_parts(i)),
-        End(0) => IResult::Error(nom::ErrorKind::Custom(0)),
-        End(start) => IResult::Done(&i[start..], split_ws_parts(&i[..start])),
+        Brace(_) => Ok((&i[..0], split_ws_parts(i))),
+        End(0) => Err(nom::Err::Error(error_position!(i, nom::ErrorKind::Custom(0)))),
+        End(start) => Ok((&i[start..], split_ws_parts(&i[..start]))),
     }
 }
 
-fn identifier(input: &[u8]) -> IResult<&[u8], &str> {
+fn identifier(input: &[u8]) -> Result<(&[u8], &str), nom::Err<&[u8]>> {
     if !nom::is_alphabetic(input[0]) && input[0] != b'_' {
-        return IResult::Error(nom::ErrorKind::Custom(0));
+        return Err(nom::Err::Error(error_position!(input, nom::ErrorKind::Custom(0))));
     }
     for (i, ch) in input.iter().enumerate() {
         if i == 0 || nom::is_alphanumeric(*ch) || *ch == b'_' {
             continue;
         }
-        return IResult::Done(&input[i..],
-                             str::from_utf8(&input[..i]).unwrap());
+        return Ok((&input[i..],
+                   str::from_utf8(&input[..i]).unwrap()));
     }
-    IResult::Done(&input[1..], str::from_utf8(&input[..1]).unwrap())
+    Ok((&input[1..], str::from_utf8(&input[..1]).unwrap()))
 }
 
 named!(num_lit<&str>, map!(nom::digit,
@@ -252,7 +253,7 @@ named!(arguments<Vec<Expr>>, do_parse!(
     (args.unwrap_or_default())
 ));
 
-named!(parameters<Vec<&'a str>>, do_parse!(
+named!(parameters<Vec<&str>>, do_parse!(
     tag_s!("(") >>
     vals: opt!(do_parse!(
         arg0: ws!(identifier) >>
@@ -628,7 +629,7 @@ named!(block_macro<Node>, do_parse!(
     ))
 ));
 
-named!(block_node<Node>, do_parse!(
+named!(block_node<Node>, dbg_dmp!(do_parse!(
     tag_s!("{%") >>
     contents: alt!(
         block_call |
@@ -644,7 +645,7 @@ named!(block_node<Node>, do_parse!(
     ) >>
     tag_s!("%}") >>
     (contents)
-));
+)));
 
 named!(block_comment<Node>, do_parse!(
     tag_s!("{#") >>
@@ -654,7 +655,7 @@ named!(block_comment<Node>, do_parse!(
     (Node::Comment(WS(pws.is_some(), inner.len() > 1 && inner[inner.len() - 1] == b'-')))
 ));
 
-named!(parse_template<Vec<Node<'a>>>, many0!(alt!(
+named!(parse_template<Vec<Node>>, many0!(alt!(
     take_content |
     block_comment |
     expr_node |
@@ -663,7 +664,7 @@ named!(parse_template<Vec<Node<'a>>>, many0!(alt!(
 
 pub fn parse(src: &str) -> Vec<Node> {
     match parse_template(src.as_bytes()) {
-        IResult::Done(left, res) => {
+        Ok((left, res)) => {
             if !left.is_empty() {
                 let s = str::from_utf8(left).unwrap();
                 panic!("unable to parse template:\n\n{:?}", s);
@@ -671,8 +672,9 @@ pub fn parse(src: &str) -> Vec<Node> {
                 res
             }
         },
-        IResult::Error(err) => panic!("problems parsing template source: {}", err),
-        IResult::Incomplete(_) => panic!("parsing incomplete"),
+        Err(nom::Err::Error(err)) => panic!("problems parsing template source: {:?}", err),
+        Err(nom::Err::Failure(err)) => panic!("problems parsing template source: {:?}", err),
+        Err(nom::Err::Incomplete(_)) => panic!("parsing incomplete"),
     }
 }
 
